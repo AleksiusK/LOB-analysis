@@ -3,15 +3,18 @@ import logging
 import sys
 
 import matplotlib as mpl
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import progressbar
+import seaborn as sns
 import torch
+from progressbar import ProgressBar
 
 from Autoformer_resources.autoformer_model import Autoformer
 from Order_evaluation.Order_eval import order_evaluation
 from process_data import make_batches
-from setup_model import setup_af, order_eval
+from setup_model import setup_models
 
 mpl.use('TkAgg')
 window = 100
@@ -19,44 +22,56 @@ horizon = 100
 
 logging.basicConfig(filename='training.log', level=logging.INFO,
                     format='%(asctime)s:%(levelname)s:%(message)s')
+b1_color = sns.color_palette("flare").as_hex()[5]
+b2_color = sns.color_palette("flare").as_hex()[1]
+af_checkpoint = 'model_checkpoints/autoformer_checkpoint'
+oe_checkpoint = 'model_checkpoints/order_evaluation_checkpoint'
 
 
 def train_all(epochs: int, window: int, horizon: int, states: str, flows: str, patience: int):
-    autoformer, optimizer, loss, epoch, start = setup_af(window, horizon)
-    autoformer = autoformer.float()
-    af_loss_function = torch.nn.MSELoss()
+    logging.info(f"Starting training \n")
+    model_dict = setup_models(window=window, horizon=horizon, af_checkpoint=af_checkpoint,
+                              oe_checkpoint=oe_checkpoint, to_train=True)
 
-    order_evaluation, optimizer, loss, epoch, start = order_eval(window, horizon)
-    order_evaluation = order_evaluation.float()
-    oe_loss_function = torch.nn.MSELoss()
+    autoformer = model_dict["Autoformer"]["model"].float()
+    autoformer_optimizer = model_dict["Autoformer"]["optimizer"]
+    autoformer_loss_fn = model_dict["Autoformer"]["loss function"]
+
+    order_evaluation = model_dict["Order evaluation"]["model"].float()
+    order_evaluation_optimizer = model_dict["Order evaluation"]["optimizer"]
+    order_evaluation_loss_fn = model_dict["Order evaluation"]["loss function"]
 
     try:
-        ts_dataloaders, oe_dataloaders = make_batches(
+        batch_generator = make_batches(
             horizon=horizon,
             window=window,
             state_path=states + "/",
-            flow_path=flows + "/")
-        logging.info("Batches created. Starting training.")
-        losses = train_forecast_model(model=autoformer, dataloader=ts_dataloaders, epochs=epochs,
-                                      optimizer=optimizer, loss_function=af_loss_function, patience=patience)
+            flow_path=flows + "/",
+            shuffle_batches=True)
 
-        plt.plot(losses)
-        plt.yscale('log')
-        plt.ylabel('Autoformer loss')
-        plt.xlabel('Epoch')
-        plt.show()
+        for ts_dataloader, oe_dataloader in batch_generator:
+            logging.info("Batches created. Starting training.")
+            losses_af = train_forecast_model(model=autoformer, dataloader=ts_dataloader, epochs=epochs,
+                                             optimizer=autoformer_optimizer, loss_function=autoformer_loss_fn,
+                                             patience=patience)
 
-        logging.info("Autoformer trained.")
+            logging.info("Autoformer trained.")
 
-        losses = train_oe_model(model=order_evaluation, forecast=autoformer, dataloader=oe_dataloaders,
-                                epochs=epochs,
-                                optimizer=optimizer, loss_function=oe_loss_function, patience=patience)
+            losses_oe = train_oe_model(model=order_evaluation, forecast=autoformer, dataloader=oe_dataloader,
+                                       epochs=epochs,
+                                       optimizer=order_evaluation_optimizer, loss_function=order_evaluation_loss_fn,
+                                       patience=patience)
 
-        plt.plot(losses)
-        plt.yscale('log')
-        plt.ylabel('Order evaluation loss')
-        plt.xlabel('Epoch')
-        plt.show()
+            logging.info("Order evaluation trained.")
+
+            sns.barplot(x=np.arange(epochs), y=losses_af, color=b1_color)
+            sns.barplot(x=np.arange(epochs), y=losses_oe, color=b2_color)
+
+            top = mpatches.Patch(color=b1_color, label='Losses for timeseries only forecast')
+            bottom = mpatches.Patch(color=b2_color, label="Losses for order and forecast combined")
+            plt.legend(handles=[top, bottom])
+
+            plt.show()
 
     except Exception as e:
         logging.error(f"Error while training. Error message: {str(e)}")
@@ -67,8 +82,9 @@ def train_all(epochs: int, window: int, horizon: int, states: str, flows: str, p
 
 def train_forecast_model(model: Autoformer, dataloader, epochs: int, optimizer, loss_function, patience: int):
     # Define device, 'cuda' if GPU is available else 'cpu'
-    bar = progressbar.ProgressBar(maxval=epochs * len(dataloader),
-                                  widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+    bar = ProgressBar(max_value=epochs * len(dataloader), widgets=['[', progressbar.Timer(), ']',
+                                                                   progressbar.GranularBar(), ' ',
+                                                                   progressbar.Percentage()])
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Move the model to the device
@@ -80,13 +96,11 @@ def train_forecast_model(model: Autoformer, dataloader, epochs: int, optimizer, 
 
     model.train()
     torch.autograd.set_detect_anomaly(True)
-    losses = []
-    checkpoint_path = f'model_checkpoints/autoformer_checkpoint'  # Unique path for each model
-    bar.start()
+    overall_losses = []
     i = 0
     for epoch in range(epochs):
+        losses = []
         for batch in dataloader:
-            bar.update(i + 1)
             x, y = batch
             # Move x and y to the device
             x = x.to(device)
@@ -104,28 +118,30 @@ def train_forecast_model(model: Autoformer, dataloader, epochs: int, optimizer, 
                 min_val_loss = loss.item()
                 epochs_no_improve = 0
                 # Save best model
-                model.save_checkpoint(path=checkpoint_path, optimizer=optimizer, epoch=epoch, loss=min_val_loss)
+                model.save_checkpoint(path=af_checkpoint, optimizer=optimizer, epoch=epoch, loss=min_val_loss)
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= patience:
                     logging.info(f'Early stopping at epoch {epoch}, best loss was {min_val_loss}')
-                    bar.finish()
-                    return losses
+                    break
             logging.info(f"Loss for batch {i} in epoch {epoch}: {loss.item()}")
             i += 1
+            bar.increment()
 
-        logging.info(f"Loss for epoch {epoch}: {np.min(losses)}")
+        logging.info(f"Best loss for epoch {epoch}: {np.min(losses)}")
+        overall_losses.append(np.mean(losses))
 
     logging.info(f"Training model done.")
     bar.finish()
-    return losses
+    return overall_losses
 
 
 def train_oe_model(model: order_evaluation, forecast: Autoformer, dataloader, epochs: int, optimizer, loss_function,
                    patience: int):
     # Define device, 'cuda' if GPU is available else
-    bar = progressbar.ProgressBar(maxval=epochs * len(dataloader),
-                                  widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+    bar = ProgressBar(max_value=epochs * len(dataloader), widgets=['[', progressbar.Timer(), ']',
+                                                                   progressbar.GranularBar(), ' ',
+                                                                   progressbar.Percentage()])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -139,13 +155,11 @@ def train_oe_model(model: order_evaluation, forecast: Autoformer, dataloader, ep
 
     model.train()
     torch.autograd.set_detect_anomaly(True)
-    losses = []
-    checkpoint_path = f'model_checkpoints/order_evaluation_checkpoint'  # Unique path for each model
-    bar.start()
+    overall_loss = []
     i = 0
     for epoch in range(epochs):
+        losses = []
         for batch in dataloader:
-            bar.update(i + 1)
             x, y, order = batch
             # Move x and y to the device
             x = x.to(device)
@@ -165,24 +179,26 @@ def train_oe_model(model: order_evaluation, forecast: Autoformer, dataloader, ep
                 min_val_loss = loss.item()
                 epochs_no_improve = 0
                 # Save best model
-                model.save_checkpoint(path=checkpoint_path, optimizer=optimizer, epoch=epoch, loss=min_val_loss)
+                model.save_checkpoint(path=oe_checkpoint, optimizer=optimizer, epoch=epoch, loss=min_val_loss)
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= patience:
                     logging.info(f'Early stopping at epoch {epoch}, best loss was {min_val_loss}')
-                    bar.finish()
-                    return losses
+                    break
             logging.info(f"Loss for batch {i} in epoch {epoch}: {loss.item()}")
             i += 1
+            bar.increment()
 
-        logging.info(f"Loss for epoch {epoch}: {np.min(losses)}")
+        logging.info(f"Best loss for epoch {epoch}: {np.min(losses)}")
+        overall_loss.append(np.mean(losses))
 
     logging.info(f"Training model done.")
     bar.finish()
-    return losses
+    return overall_loss
 
 
 def main(argv):
+    # Default arguments
     epochs = 100
     window = 60  # 3 hours in milliseconds = 300000
     horizon = 60  # These need to be dividable by one another

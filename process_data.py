@@ -110,9 +110,9 @@ def preprocess(statedf: pd.DataFrame, flowdf: pd.DataFrame, window: int, horizon
     return merged
 
 
-def make_batches(horizon: int, window: int, state_path: str or None, flow_path: str or None):
-    # Check that split and previous_split are within the expected range
-
+def make_batches(horizon: int, window: int, state_path: str or None, flow_path: str or None,
+                 shuffle_batches: bool = False):
+    # A generator for getting all the data. Will yield all of the data for each of the firms, firm by firm.
     x_oe, y_oe, x_ts, y_ts, orders = [], [], [], [], []
     firms = listdir(state_path)
 
@@ -164,18 +164,18 @@ def make_batches(horizon: int, window: int, state_path: str or None, flow_path: 
         x_ts.append(timeseries_x)
         y_ts.append(timeseries_y)
 
-    # For time series: unsqueeze at 2 so the shape will be (batch, columns, 1)
-    oe_x = torch.cat(x_oe, dim=0).unsqueeze(2)
-    oe_y = torch.cat(y_oe, dim=0).unsqueeze(2)
-    # For orders: unsqueeze at 1 so the shape will be (batch, 1, columns)
-    orders = torch.cat(orders, dim=0).unsqueeze(1)
+        # For time series: unsqueeze at 2 so the shape will be (batch, columns, 1)
+        oe_x = torch.cat(x_oe, dim=0).unsqueeze(2)
+        oe_y = torch.cat(y_oe, dim=0).unsqueeze(2)
+        # For orders: unsqueeze at 1 so the shape will be (batch, 1, columns)
+        orders = torch.cat(orders, dim=0).unsqueeze(1)
 
-    ts_x = torch.cat(x_ts, dim=0).unsqueeze(2)
-    ts_y = torch.cat(y_ts, dim=0).unsqueeze(2)
+        ts_x = torch.cat(x_ts, dim=0).unsqueeze(2)
+        ts_y = torch.cat(y_ts, dim=0).unsqueeze(2)
 
-    ts_dataloader, _ = make_ts_DataLoaders(ts_x, ts_y)
-    oe_dataloader, _ = make_order_DataLoaders(oe_x, oe_y, orders)
-    return ts_dataloader, oe_dataloader
+        ts_dataloader, _ = make_ts_DataLoaders(x=ts_x, y=ts_y, batch_size=32, shuffle=shuffle_batches)
+        oe_dataloader, _ = make_order_DataLoaders(x=oe_x, y=oe_y, orders=orders, batch_size=32, shuffle=shuffle_batches)
+        yield ts_dataloader, oe_dataloader
 
 
 def get_ts(window: int, horizon: int, df: pd.DataFrame, path_: str):
