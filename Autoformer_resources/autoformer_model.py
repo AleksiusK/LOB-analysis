@@ -33,11 +33,10 @@ class Autoformer(nn.Module):
         self.MLP = nn.ModuleList([MLP(d_model=self.d_model, out_length=self.in_dim, num_layers=self.num_layers) for
                                   _ in range(4)])
         self.encoder = autoformer_encoder(lags=self.lags, c=self.c, window=self.window,
-                                          prediction_len=self.pred_len, num_layers=self.num_layers,
+                                          prediction_len=self.pred_len,
                                           num_heads=self.num_heads, trainable=self.trainable, d_model=self.d_model)
         self.decoder = autoformer_decoder(lags=self.lags, c=self.c, window=self.window,
-                                          prediction_len=self.pred_len, num_layers=self.num_layers,
-                                          input_len=int(self.pred_len / 2),
+                                          prediction_len=self.pred_len, input_len=int(self.pred_len / 2),
                                           trainable=self.trainable, num_heads=self.num_heads, d_model=self.d_model)
         self.series_decomp = series_decomposition_block(window=int(self.window / 2), num_heads=self.num_heads,
                                                         return_trend=True)
