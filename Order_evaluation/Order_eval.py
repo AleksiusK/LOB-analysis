@@ -72,7 +72,7 @@ class order_evaluation(nn.Module):
     def load_checkpoint(cls, model, optimizer, path):
         checkpoint = torch.load(path)
 
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model'], strict=False)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
         loss = checkpoint['loss']

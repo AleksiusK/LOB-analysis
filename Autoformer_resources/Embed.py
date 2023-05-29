@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class Embed(nn.Module):
     def __init__(self, horizon: int, d_model: int, input_length: int):
         super(Embed, self).__init__()
@@ -16,7 +17,6 @@ class Embed(nn.Module):
     def forward(self, inputs):
         # Embedding using Time2Vec
         x = inputs
-        self.build(x.shape)
         original = self.w * x + self.p
         x = x.float()
         original = original.float()
@@ -26,4 +26,3 @@ class Embed(nn.Module):
 
         x = torch.cat([sin_trans, original], -1)
         return x
-

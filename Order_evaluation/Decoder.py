@@ -1,9 +1,10 @@
 import torch.nn as nn
-from Order_evaluation.autocorrelation_layer import autocorrelation_layer
-from Order_evaluation.series_decomposition import series_decomposition_block
-from Order_evaluation.feed_forward import FeedForward
-from Order_evaluation.Time2VecEmbed import Embed
+
 from Order_evaluation.MLP import MLP
+from Order_evaluation.Time2VecEmbed import Embed
+from Order_evaluation.autocorrelation_layer import autocorrelation_layer
+from Order_evaluation.feed_forward import FeedForward
+from Order_evaluation.series_decomposition import series_decomposition_block
 
 
 class autoformer_decoder(nn.Module):
@@ -23,7 +24,7 @@ class autoformer_decoder(nn.Module):
                                                       output=self.prediction_len, heads=self.num_heads,
                                                       trainable=self.trainable, d_model=self.d_model)
 
-        self.autocorrelation2 = autocorrelation_layer( c=self.c,
+        self.autocorrelation2 = autocorrelation_layer(c=self.c,
                                                       output=self.prediction_len, heads=self.num_heads,
                                                       trainable=self.trainable, d_model=self.d_model)
 
@@ -39,6 +40,7 @@ class autoformer_decoder(nn.Module):
         self.embed = Embed(self.d_model, self.window)
 
     def forward(self, x_de, x_en, x_mean):
+        self.embed.build(x_de.shape)
         x_de = self.embed(x_de)
 
         for _ in range(self.decoders):

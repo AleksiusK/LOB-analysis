@@ -17,8 +17,6 @@ from process_data import make_batches
 from setup_model import setup_models
 
 mpl.use('TkAgg')
-window = 100
-horizon = 100
 
 logging.basicConfig(filename='training.log', level=logging.INFO,
                     format='%(asctime)s:%(levelname)s:%(message)s')
@@ -29,7 +27,6 @@ oe_checkpoint = 'model_checkpoints/order_evaluation_checkpoint'
 
 
 def train_all(epochs: int, window: int, horizon: int, states: str, flows: str, patience: int):
-    logging.info(f"Starting training \n")
     model_dict = setup_models(window=window, horizon=horizon, af_checkpoint=af_checkpoint,
                               oe_checkpoint=oe_checkpoint, to_train=True)
 
@@ -47,7 +44,11 @@ def train_all(epochs: int, window: int, horizon: int, states: str, flows: str, p
             window=window,
             state_path=states + "/",
             flow_path=flows + "/",
-            shuffle_batches=True)
+            shuffle_batches=True,
+            resolution=1000)  # By applying resolution, the function will use rolling averages instead of the raw
+        # data. This will affect how you should read the "window" and "horizon" parameters. For example, as the data
+        # I am using is in the intervals of milliseconds, scaling by 60 000 will result in the data being in minutes
+        # instead of milliseconds. Useful values for resolution might be 1000 (1s) or 60 000 (1min)
 
         for ts_dataloader, oe_dataloader in batch_generator:
             logging.info("Batches created. Starting training.")
@@ -92,10 +93,10 @@ def train_forecast_model(model: Autoformer, dataloader, epochs: int, optimizer, 
 
     # Early stopping initialization
     epochs_no_improve = 0
-    min_val_loss = np.inf
 
     model.train()
     torch.autograd.set_detect_anomaly(True)
+    af_min_val_loss = np.inf
     overall_losses = []
     i = 0
     for epoch in range(epochs):
@@ -112,21 +113,22 @@ def train_forecast_model(model: Autoformer, dataloader, epochs: int, optimizer, 
             loss.backward()  # Backward pass
             optimizer.step()  # Calculate loss
             losses.append(loss.item())  # Update weights
-
-            # Early stopping check
-            if loss.item() < min_val_loss:
-                min_val_loss = loss.item()
-                epochs_no_improve = 0
-                # Save best model
-                model.save_checkpoint(path=af_checkpoint, optimizer=optimizer, epoch=epoch, loss=min_val_loss)
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    logging.info(f'Early stopping at epoch {epoch}, best loss was {min_val_loss}')
-                    break
-            logging.info(f"Loss for batch {i} in epoch {epoch}: {loss.item()}")
             i += 1
             bar.increment()
+
+            # Early stopping check
+            if loss.item() < af_min_val_loss:
+                af_min_val_loss = loss.item()
+                epochs_no_improve = 0
+                # Save best model
+                model.save_checkpoint(path=af_checkpoint, optimizer=optimizer, epoch=epoch, loss=af_min_val_loss)
+            else:
+                epochs_no_improve += 1
+            logging.info(f"Loss for batch {i} in epoch {epoch}: {loss.item()}")
+
+        if epochs_no_improve >= patience:
+            logging.info(f'Early stopping at epoch {epoch}, best loss was {af_min_val_loss}')
+            break
 
         logging.info(f"Best loss for epoch {epoch}: {np.min(losses)}")
         overall_losses.append(np.mean(losses))
@@ -151,10 +153,10 @@ def train_oe_model(model: order_evaluation, forecast: Autoformer, dataloader, ep
 
     # Early stopping initialization
     epochs_no_improve = 0
-    min_val_loss = np.inf
 
     model.train()
     torch.autograd.set_detect_anomaly(True)
+    oe_min_val_loss = np.inf
     overall_loss = []
     i = 0
     for epoch in range(epochs):
@@ -172,22 +174,22 @@ def train_oe_model(model: order_evaluation, forecast: Autoformer, dataloader, ep
             loss = loss_function(output, y.float())
             loss.backward()  # Backward pass
             optimizer.step()  # Calculate loss
-            losses.append(loss.item())  # Update weights
+            losses.append(loss.item())
+            i += 1
+            bar.increment()  # Update weights
 
             # Early stopping check
-            if loss.item() < min_val_loss:
-                min_val_loss = loss.item()
+            if loss.item() < oe_min_val_loss:
+                oe_min_val_loss = loss.item()
                 epochs_no_improve = 0
                 # Save best model
-                model.save_checkpoint(path=oe_checkpoint, optimizer=optimizer, epoch=epoch, loss=min_val_loss)
+                model.save_checkpoint(path=oe_checkpoint, optimizer=optimizer, epoch=epoch, loss=oe_min_val_loss)
             else:
                 epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    logging.info(f'Early stopping at epoch {epoch}, best loss was {min_val_loss}')
-                    break
             logging.info(f"Loss for batch {i} in epoch {epoch}: {loss.item()}")
-            i += 1
-            bar.increment()
+        if epochs_no_improve >= patience:
+            logging.info(f'Early stopping at epoch {epoch}, best loss was {oe_min_val_loss}')
+        break
 
         logging.info(f"Best loss for epoch {epoch}: {np.min(losses)}")
         overall_loss.append(np.mean(losses))
@@ -199,9 +201,9 @@ def train_oe_model(model: order_evaluation, forecast: Autoformer, dataloader, ep
 
 def main(argv):
     # Default arguments
-    epochs = 100
-    window = 60  # 3 hours in milliseconds = 300000
-    horizon = 60  # These need to be dividable by one another
+    epochs = 1
+    window = 10  # 3 hours in milliseconds = 300000
+    horizon = 10  # These need to be dividable by one another
     patience = 80
     state = "D:/US_LOB/states/secondstates"
     flow = "D:/US_LOB/flow"

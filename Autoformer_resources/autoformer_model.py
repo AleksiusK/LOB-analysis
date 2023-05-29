@@ -29,7 +29,10 @@ class Autoformer(nn.Module):
         self.window = lags
         self.encoders = encoders
         self.decoders = decoders
-        self.embed = Embed(horizon=self.pred_len, d_model=self.d_model, input_length=self.window)
+        self.embed = nn.ModuleList([
+            Embed(horizon=self.pred_len, d_model=self.d_model, input_length=self.window),
+            Embed(horizon=self.pred_len, d_model=self.d_model, input_length=self.window)
+        ])
         self.MLP = nn.ModuleList([MLP(d_model=self.d_model, out_length=self.in_dim, num_layers=self.num_layers) for
                                   _ in range(4)])
         self.encoder = autoformer_encoder(lags=self.lags, c=self.c, window=self.window,
@@ -51,10 +54,12 @@ class Autoformer(nn.Module):
         xmean = torch.full((x_in.shape[0], self.pred_len, x_in.shape[2]), mean)
         x_des = torch.cat([x_ens, x0], dim=1)
         x_det = torch.cat([x_ent, xmean], dim=1)
-        x_in = self.embed(x_in)
+        self.embed[0].build(x_in.shape)
+        x_in = self.embed[0](x_in)
         for en in range(self.encoders):
             x_in = self.encoder(x_in)
-        x_de = self.embed(x_des)
+        self.embed[1].build(x_des.shape)
+        x_de = self.embed[1](x_des)
         t_de = x_det
         for dec in range(self.decoders):
             x_de, t_de0, t_de1, t_de2 = self.decoder(x_de, x_in)
@@ -79,7 +84,7 @@ class Autoformer(nn.Module):
     def load_checkpoint(cls, model, optimizer, path):
         checkpoint = torch.load(path)
 
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model'], strict=False)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
         loss = checkpoint['loss']
